@@ -102,7 +102,7 @@ app.get("/api/health", (req, res) => {
 
 // Handle root path
 app.get("/", (req, res) => {
-  res.json({ message: "Health Record API is running!!" });
+  res.json({ message: "Health Record API is running!" });
 });
 
 // Export the Express API
