@@ -8,17 +8,14 @@ const app = express();
 app.use(express.json());
 app.use(cors());
 
-// MongoDB connection dengan retry logic
+// MongoDB connection - HAPUS options yang deprecated
 const MONGODB_URI = "mongodb+srv://riki:riki@cluster0.ouqklmc.mongodb.net/health-record?retryWrites=true&w=majority";
 
 const connectWithRetry = async () => {
   try {
     await mongoose.connect(MONGODB_URI, {
-      useNewUrlParser: true,
-      useUnifiedTopology: true,
       serverSelectionTimeoutMS: 5000,
       socketTimeoutMS: 45000,
-      bufferCommands: false,
     });
     console.log("MongoDB connected successfully");
   } catch (error) {
