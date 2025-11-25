@@ -8,34 +8,40 @@ const app = express();
 app.use(express.json());
 app.use(cors());
 
-// MongoDB connection dengan options yang diperbaiki
+// MongoDB connection dengan retry logic
 const MONGODB_URI = "mongodb+srv://riki:riki@cluster0.ouqklmc.mongodb.net/health-record?retryWrites=true&w=majority";
 
-// Tambahkan connection options
-const mongooseOptions = {
-  useNewUrlParser: true,
-  useUnifiedTopology: true,
-  serverSelectionTimeoutMS: 30000, // 30 seconds
-  socketTimeoutMS: 45000, // 45 seconds
-  bufferCommands: false,
-  bufferMaxEntries: 0,
+const connectWithRetry = async () => {
+  try {
+    await mongoose.connect(MONGODB_URI, {
+      useNewUrlParser: true,
+      useUnifiedTopology: true,
+      serverSelectionTimeoutMS: 5000,
+      socketTimeoutMS: 45000,
+      bufferCommands: false,
+    });
+    console.log("MongoDB connected successfully");
+  } catch (error) {
+    console.error("MongoDB connection error:", error);
+    console.log("Retrying connection in 5 seconds...");
+    setTimeout(connectWithRetry, 5000);
+  }
 };
 
-mongoose
-  .connect(MONGODB_URI, mongooseOptions)
-  .then(() => console.log("MongoDB Connected Successfully"))
-  .catch((err) => {
-    console.log("MongoDB Connection Error:", err);
-    console.log("MongoDB URI:", MONGODB_URI);
-  });
+// Start connection
+connectWithRetry();
 
 // Handle mongoose connection events
+mongoose.connection.on("connected", () => {
+  console.log("Mongoose connected to MongoDB");
+});
+
 mongoose.connection.on("error", (err) => {
-  console.log("MongoDB connection error:", err);
+  console.log("Mongoose connection error:", err);
 });
 
 mongoose.connection.on("disconnected", () => {
-  console.log("MongoDB disconnected");
+  console.log("Mongoose disconnected");
 });
 
 // ---- Schema ----
@@ -66,12 +72,11 @@ const Record = mongoose.model("Record", RecordSchema);
 
 // ---- API Routes ----
 
-// GET semua data dengan error handling
+// GET semua data
 app.get("/api/records", async (req, res) => {
   try {
-    // Check if MongoDB is connected
     if (mongoose.connection.readyState !== 1) {
-      return res.status(500).json({ error: "Database not connected" });
+      return res.status(503).json({ error: "Database not connected. Please try again." });
     }
 
     const records = await Record.find().sort({ _id: -1 });
@@ -86,7 +91,7 @@ app.get("/api/records", async (req, res) => {
 app.post("/api/records", async (req, res) => {
   try {
     if (mongoose.connection.readyState !== 1) {
-      return res.status(500).json({ error: "Database not connected" });
+      return res.status(503).json({ error: "Database not connected. Please try again." });
     }
 
     const record = new Record(req.body);
@@ -102,7 +107,7 @@ app.post("/api/records", async (req, res) => {
 app.put("/api/records/:id", async (req, res) => {
   try {
     if (mongoose.connection.readyState !== 1) {
-      return res.status(500).json({ error: "Database not connected" });
+      return res.status(503).json({ error: "Database not connected. Please try again." });
     }
 
     const record = await Record.findByIdAndUpdate(req.params.id, req.body, { new: true });
@@ -117,7 +122,7 @@ app.put("/api/records/:id", async (req, res) => {
 app.delete("/api/records/:id", async (req, res) => {
   try {
     if (mongoose.connection.readyState !== 1) {
-      return res.status(500).json({ error: "Database not connected" });
+      return res.status(503).json({ error: "Database not connected. Please try again." });
     }
 
     await Record.findByIdAndDelete(req.params.id);
@@ -132,7 +137,7 @@ app.delete("/api/records/:id", async (req, res) => {
 app.delete("/api/records", async (req, res) => {
   try {
     if (mongoose.connection.readyState !== 1) {
-      return res.status(500).json({ error: "Database not connected" });
+      return res.status(503).json({ error: "Database not connected. Please try again." });
     }
 
     await Record.deleteMany({});
@@ -143,13 +148,14 @@ app.delete("/api/records", async (req, res) => {
   }
 });
 
-// Health check endpoint dengan status database
+// Health check endpoint
 app.get("/api/health", (req, res) => {
   const dbStatus = mongoose.connection.readyState === 1 ? "Connected" : "Disconnected";
   res.json({
     status: "OK",
     message: "Server is running",
     database: dbStatus,
+    databaseStatus: mongoose.connection.readyState,
     timestamp: new Date().toISOString(),
   });
 });
