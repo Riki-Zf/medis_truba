@@ -8,37 +8,56 @@ const app = express();
 app.use(express.json());
 app.use(cors());
 
-// MongoDB connection - HAPUS options yang deprecated
+// MongoDB connection untuk production
 const MONGODB_URI = "mongodb+srv://riki:riki@cluster0.ouqklmc.mongodb.net/health-record?retryWrites=true&w=majority";
 
-const connectWithRetry = async () => {
+// Connection function dengan handling khusus production
+const connectDB = async () => {
   try {
-    await mongoose.connect(MONGODB_URI, {
-      serverSelectionTimeoutMS: 5000,
-      socketTimeoutMS: 45000,
+    console.log("Attempting to connect to MongoDB...");
+
+    // Untuk production, gunakan connection options yang lebih robust
+    const conn = await mongoose.connect(MONGODB_URI, {
+      serverSelectionTimeoutMS: 30000, // 30 detik
+      socketTimeoutMS: 45000, // 45 detik
+      maxPoolSize: 10,
+      minPoolSize: 1,
     });
-    console.log("MongoDB connected successfully");
+
+    console.log(`MongoDB Connected: ${conn.connection.host}`);
+    return true;
   } catch (error) {
-    console.error("MongoDB connection error:", error);
+    console.error("MongoDB connection failed:", error);
+    console.error("Error name:", error.name);
+    console.error("Error message:", error.message);
+
+    // Retry connection setelah 5 detik
     console.log("Retrying connection in 5 seconds...");
-    setTimeout(connectWithRetry, 5000);
+    setTimeout(connectDB, 5000);
+    return false;
   }
 };
 
-// Start connection
-connectWithRetry();
+// Initialize connection
+connectDB();
 
-// Handle mongoose connection events
+// Event listeners
 mongoose.connection.on("connected", () => {
-  console.log("Mongoose connected to MongoDB");
+  console.log("✅ Mongoose connected to MongoDB");
 });
 
 mongoose.connection.on("error", (err) => {
-  console.log("Mongoose connection error:", err);
+  console.log("❌ Mongoose connection error:", err);
 });
 
 mongoose.connection.on("disconnected", () => {
-  console.log("Mongoose disconnected");
+  console.log("🔌 Mongoose disconnected");
+});
+
+// Graceful shutdown
+process.on("SIGINT", async () => {
+  await mongoose.connection.close();
+  process.exit(0);
 });
 
 // ---- Schema ----
@@ -69,13 +88,21 @@ const Record = mongoose.model("Record", RecordSchema);
 
 // ---- API Routes ----
 
-// GET semua data
-app.get("/api/records", async (req, res) => {
-  try {
-    if (mongoose.connection.readyState !== 1) {
-      return res.status(503).json({ error: "Database not connected. Please try again." });
-    }
+// Middleware untuk check database connection
+const checkDB = (req, res, next) => {
+  if (mongoose.connection.readyState !== 1) {
+    return res.status(503).json({
+      error: "Database not connected",
+      message: "Please try again in a few seconds",
+      databaseStatus: mongoose.connection.readyState,
+    });
+  }
+  next();
+};
 
+// GET semua data
+app.get("/api/records", checkDB, async (req, res) => {
+  try {
     const records = await Record.find().sort({ _id: -1 });
     res.json(records);
   } catch (error) {
@@ -85,12 +112,8 @@ app.get("/api/records", async (req, res) => {
 });
 
 // POST tambah data
-app.post("/api/records", async (req, res) => {
+app.post("/api/records", checkDB, async (req, res) => {
   try {
-    if (mongoose.connection.readyState !== 1) {
-      return res.status(503).json({ error: "Database not connected. Please try again." });
-    }
-
     const record = new Record(req.body);
     await record.save();
     res.json({ success: true, data: record });
@@ -101,12 +124,8 @@ app.post("/api/records", async (req, res) => {
 });
 
 // PUT update data
-app.put("/api/records/:id", async (req, res) => {
+app.put("/api/records/:id", checkDB, async (req, res) => {
   try {
-    if (mongoose.connection.readyState !== 1) {
-      return res.status(503).json({ error: "Database not connected. Please try again." });
-    }
-
     const record = await Record.findByIdAndUpdate(req.params.id, req.body, { new: true });
     res.json({ success: true, data: record });
   } catch (error) {
@@ -116,12 +135,8 @@ app.put("/api/records/:id", async (req, res) => {
 });
 
 // DELETE satu data
-app.delete("/api/records/:id", async (req, res) => {
+app.delete("/api/records/:id", checkDB, async (req, res) => {
   try {
-    if (mongoose.connection.readyState !== 1) {
-      return res.status(503).json({ error: "Database not connected. Please try again." });
-    }
-
     await Record.findByIdAndDelete(req.params.id);
     res.json({ success: true });
   } catch (error) {
@@ -131,12 +146,8 @@ app.delete("/api/records/:id", async (req, res) => {
 });
 
 // DELETE semua data
-app.delete("/api/records", async (req, res) => {
+app.delete("/api/records", checkDB, async (req, res) => {
   try {
-    if (mongoose.connection.readyState !== 1) {
-      return res.status(503).json({ error: "Database not connected. Please try again." });
-    }
-
     await Record.deleteMany({});
     res.json({ success: true });
   } catch (error) {
@@ -145,14 +156,17 @@ app.delete("/api/records", async (req, res) => {
   }
 });
 
-// Health check endpoint
+// Health check endpoint yang lebih detail
 app.get("/api/health", (req, res) => {
-  const dbStatus = mongoose.connection.readyState === 1 ? "Connected" : "Disconnected";
+  const dbStatus = mongoose.connection.readyState;
+  const statusText = dbStatus === 1 ? "Connected" : dbStatus === 2 ? "Connecting" : dbStatus === 3 ? "Disconnecting" : "Disconnected";
+
   res.json({
     status: "OK",
     message: "Server is running",
-    database: dbStatus,
-    databaseStatus: mongoose.connection.readyState,
+    database: statusText,
+    databaseStatus: dbStatus,
+    environment: process.env.NODE_ENV || "development",
     timestamp: new Date().toISOString(),
   });
 });
@@ -162,6 +176,7 @@ app.get("/", (req, res) => {
   res.json({
     message: "Health Record API is running!!",
     database: mongoose.connection.readyState === 1 ? "Connected" : "Disconnected",
+    environment: process.env.NODE_ENV || "development",
   });
 });
 
