@@ -129,6 +129,11 @@ const RecordSchema = new mongoose.Schema(
       type: String,
       required: true,
     },
+    // TAMBAHKAN FIELD CATATAN
+    catatan: {
+      type: String,
+      default: "", // Optional, default kosong
+    },
   },
   {
     timestamps: true,
@@ -193,7 +198,7 @@ app.get("/api/records", ensureDB, async (req, res) => {
 // POST tambah data
 app.post("/api/records", ensureDB, async (req, res) => {
   try {
-    // Validasi data required
+    // Validasi data required (catatan TIDAK required)
     const requiredFields = ["nama", "bn", "umur", "jabatan", "supervisor", "dept", "systolic", "diastolic", "nadi", "spo2", "suhu", "tanggal", "time", "color", "fitness"];
     const missingFields = requiredFields.filter((field) => !req.body[field]);
 
