@@ -1,25 +1,22 @@
-import { useState, useEffect, useRef } from "react";
-import { Line } from "react-chartjs-2";
-import { Chart as ChartJS, LineElement, CategoryScale, LinearScale, PointElement, Legend, Tooltip } from "chart.js";
+import { useState, useEffect } from "react";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 
-ChartJS.register(LineElement, CategoryScale, LinearScale, PointElement, Legend, Tooltip);
-
-// API service
-const API_BASE = "http://localhost:4000";
+// API service - SESUAIKAN DENGAN BACKEND ANDA
+const API_BASE = "https://medis-truba.vercel.app";
 
 const apiService = {
   // Get all records
   getRecords: async () => {
-    const response = await fetch(`${API_BASE}/records`);
+    const response = await fetch(`${API_BASE}/api/records`);
     if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
-    return await response.json();
+    const data = await response.json();
+    return data.data || []; // Sesuaikan dengan response structure backend
   },
 
   // Create new record
   createRecord: async (record) => {
-    const response = await fetch(`${API_BASE}/records`, {
+    const response = await fetch(`${API_BASE}/api/records`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -32,7 +29,7 @@ const apiService = {
 
   // Update record
   updateRecord: async (id, record) => {
-    const response = await fetch(`${API_BASE}/records/${id}`, {
+    const response = await fetch(`${API_BASE}/api/records/${id}`, {
       method: "PUT",
       headers: {
         "Content-Type": "application/json",
@@ -45,7 +42,7 @@ const apiService = {
 
   // Delete record
   deleteRecord: async (id) => {
-    const response = await fetch(`${API_BASE}/records/${id}`, {
+    const response = await fetch(`${API_BASE}/api/records/${id}`, {
       method: "DELETE",
     });
     if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
@@ -54,7 +51,7 @@ const apiService = {
 
   // Delete all records
   deleteAllRecords: async () => {
-    const response = await fetch(`${API_BASE}/records`, {
+    const response = await fetch(`${API_BASE}/api/records`, {
       method: "DELETE",
     });
     if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
@@ -75,11 +72,24 @@ export default function App() {
   const [spo2, setSpo2] = useState("");
   const [suhu, setSuhu] = useState("");
   const [tanggal, setTanggal] = useState("");
-  const [records, setRecords] = useState([]); // Pastikan array kosong, bukan undefined
+  const [catatan, setCatatan] = useState("");
+  const [records, setRecords] = useState([]);
   const [editIndex, setEditIndex] = useState(null);
-  const [editingId, setEditingId] = useState(null);
+  const [editingId, setEditingId] = useState(null); // ID untuk edit
+  const [reportType, setReportType] = useState("daily");
+  const [reportDate, setReportDate] = useState(new Date().toISOString().split("T")[0]);
+  const [reportWeek, setReportWeek] = useState(getCurrentWeek());
+  const [previewFitness, setPreviewFitness] = useState("");
+  const [showAllRecords, setShowAllRecords] = useState(false);
   const [loading, setLoading] = useState(false);
-  const chartRef = useRef(null);
+
+  // Fungsi untuk mendapatkan minggu saat ini dalam format YYYY-Www
+  function getCurrentWeek() {
+    const now = new Date();
+    const startOfYear = new Date(now.getFullYear(), 0, 1);
+    const pastDaysOfYear = (now - startOfYear) / 86400000;
+    return now.getFullYear() + "-W" + Math.ceil((pastDaysOfYear + 1) / 7);
+  }
 
   // LOAD DATA DARI BACKEND SAAT AWAL
   useEffect(() => {
@@ -91,15 +101,25 @@ export default function App() {
       setLoading(true);
       const data = await apiService.getRecords();
       console.log("Data loaded:", data);
-      setRecords(data || []); // Pastikan selalu array
+      setRecords(data || []);
     } catch (error) {
       console.error("Error loading records:", error);
       alert("Gagal memuat data dari server");
-      setRecords([]); // Set ke array kosong jika error
+      setRecords([]);
     } finally {
       setLoading(false);
     }
   };
+
+  // Effect untuk update preview status
+  useEffect(() => {
+    if (sistolik && diastolik && nadi && spo2 && suhu) {
+      const status = getFitnessStatus(Number(sistolik), Number(diastolik), Number(nadi), Number(spo2), Number(suhu));
+      setPreviewFitness(status);
+    } else {
+      setPreviewFitness("");
+    }
+  }, [sistolik, diastolik, nadi, spo2, suhu]);
 
   const getColor = (sys, dia) => {
     if (sys < 120 && dia < 80) return "bg-green-200";
@@ -116,24 +136,66 @@ export default function App() {
   };
 
   const getFitnessStatus = (sys, dia, nadi, spo2, suhu) => {
-    const bpNormal = sys < 140 && dia < 90;
-    const nadiNormal = nadi >= 60 && nadi <= 100;
-    const spo2Normal = spo2 >= 95;
-    const suhuNormal = suhu >= 36 && suhu <= 37.5;
-
-    if (bpNormal && nadiNormal && spo2Normal && suhuNormal) {
-      return "FIT";
+    // Cek tekanan darah
+    let bpStatus = "FIT";
+    if (sys >= 150 || dia >= 100) {
+      bpStatus = "UNFIT";
+    } else if ((sys >= 130 && sys < 150) || (dia >= 90 && dia < 100)) {
+      bpStatus = "FIT WITH NOTE";
     }
-    return "TIDAK FIT";
+
+    // Cek nadi
+    let nadiStatus = "FIT";
+    if (nadi > 130) {
+      nadiStatus = "UNFIT";
+    } else if (nadi >= 100 && nadi <= 130) {
+      nadiStatus = "FIT WITH NOTE";
+    }
+
+    // Cek SpO2
+    let spo2Status = "FIT";
+    if (spo2 < 92) {
+      spo2Status = "UNFIT";
+    } else if (spo2 >= 92 && spo2 < 95) {
+      spo2Status = "FIT WITH NOTE";
+    }
+
+    // Cek suhu
+    let suhuStatus = "FIT";
+    if (suhu >= 38) {
+      suhuStatus = "UNFIT";
+    } else if (suhu >= 37.5 && suhu < 38) {
+      suhuStatus = "FIT WITH NOTE";
+    }
+
+    // Tentukan status akhir
+    if (bpStatus === "UNFIT" || nadiStatus === "UNFIT" || spo2Status === "UNFIT" || suhuStatus === "UNFIT") {
+      return "TIDAK FIT";
+    }
+
+    if (bpStatus === "FIT WITH NOTE" || nadiStatus === "FIT WITH NOTE" || spo2Status === "FIT WITH NOTE" || suhuStatus === "FIT WITH NOTE") {
+      return "FIT WITH NOTE";
+    }
+
+    return "FIT";
   };
 
   const getFitnessColor = (status) => {
-    return status === "FIT" ? "text-green-700 font-bold" : "text-red-700 font-bold";
+    if (status === "FIT") return "text-green-700 font-bold";
+    if (status === "FIT WITH NOTE") return "text-orange-600 font-bold";
+    return "text-red-700 font-bold";
   };
 
   const handleSubmit = async () => {
     if (!nama || !bn || !umur || !jabatan || !supervisor || !department || !sistolik || !diastolik || !nadi || !spo2 || !suhu || !tanggal) {
       alert("Semua field harus diisi!");
+      return;
+    }
+
+    const fitnessStatus = getFitnessStatus(Number(sistolik), Number(diastolik), Number(nadi), Number(spo2), Number(suhu));
+
+    if (fitnessStatus === "FIT WITH NOTE" && !catatan.trim()) {
+      alert("Harap isi catatan untuk status FIT WITH NOTE");
       return;
     }
 
@@ -152,7 +214,8 @@ export default function App() {
       tanggal,
       time: new Date().toLocaleTimeString(),
       color: getColor(Number(sistolik), Number(diastolik)),
-      fitness: getFitnessStatus(Number(sistolik), Number(diastolik), Number(nadi), Number(spo2), Number(suhu)),
+      fitness: fitnessStatus,
+      catatan: fitnessStatus === "FIT WITH NOTE" ? catatan : "",
     };
 
     try {
@@ -160,20 +223,16 @@ export default function App() {
 
       if (editingId) {
         // Mode Edit
-        console.log("Updating record with ID:", editingId);
         await apiService.updateRecord(editingId, newRecord);
         alert("Data berhasil diupdate!");
       } else {
         // Mode Tambah
-        console.log("Creating new record");
         await apiService.createRecord(newRecord);
         alert("Data berhasil ditambahkan!");
       }
 
       // Reload data dari server
       await loadRecords();
-
-      // Reset form
       resetForm();
     } catch (error) {
       console.error("Error saving record:", error);
@@ -185,20 +244,19 @@ export default function App() {
 
   const handleEdit = (index) => {
     const record = records[index];
-    console.log("Editing record:", record);
-
-    setNama(record.nama || "");
-    setBn(record.bn || "");
-    setUmur(record.umur?.toString() || "");
-    setJabatan(record.jabatan || "");
-    setSupervisor(record.supervisor || "");
-    setDepartment(record.dept || "");
-    setSistolik(record.systolic?.toString() || "");
-    setDiastolik(record.diastolic?.toString() || "");
-    setNadi(record.nadi?.toString() || "");
-    setSpo2(record.spo2?.toString() || "");
-    setSuhu(record.suhu?.toString() || "");
-    setTanggal(record.tanggal || "");
+    setNama(record.nama);
+    setBn(record.bn);
+    setUmur(record.umur.toString());
+    setJabatan(record.jabatan);
+    setSupervisor(record.supervisor);
+    setDepartment(record.dept);
+    setSistolik(record.systolic.toString());
+    setDiastolik(record.diastolic.toString());
+    setNadi(record.nadi.toString());
+    setSpo2(record.spo2.toString());
+    setSuhu(record.suhu.toString());
+    setTanggal(record.tanggal);
+    setCatatan(record.catatan || "");
     setEditIndex(index);
     setEditingId(record._id);
 
@@ -224,13 +282,13 @@ export default function App() {
     setSpo2("");
     setSuhu("");
     setTanggal("");
+    setCatatan("");
   };
 
   const handleDelete = async (index) => {
     if (window.confirm("Apakah Anda yakin ingin menghapus data ini?")) {
       try {
         const record = records[index];
-        console.log("Deleting record with ID:", record._id);
         await apiService.deleteRecord(record._id);
         await loadRecords();
         alert("Data berhasil dihapus!");
@@ -254,23 +312,78 @@ export default function App() {
     }
   };
 
-  // FUNGSI exportToPDF
+  // Fungsi untuk mendapatkan data berdasarkan tanggal (daily)
+  const getDailyRecords = () => {
+    return records.filter((record) => record.tanggal === reportDate);
+  };
+
+  // Fungsi untuk mendapatkan data berdasarkan minggu (weekly)
+  const getWeeklyRecords = () => {
+    const [year, weekStr] = reportWeek.split("-W");
+    const week = parseInt(weekStr);
+
+    return records.filter((record) => {
+      const recordDate = new Date(record.tanggal);
+      const recordYear = recordDate.getFullYear();
+      const startOfYear = new Date(recordYear, 0, 1);
+      const pastDaysOfYear = (recordDate - startOfYear) / 86400000;
+      const recordWeek = Math.ceil((pastDaysOfYear + 1) / 7);
+
+      return recordYear === parseInt(year) && recordWeek === week;
+    });
+  };
+
+  // Fungsi untuk mendapatkan data yang akan ditampilkan berdasarkan tipe laporan
+  const getFilteredRecords = () => {
+    if (showAllRecords) {
+      return records;
+    }
+    if (reportType === "daily") {
+      return getDailyRecords();
+    } else {
+      return getWeeklyRecords();
+    }
+  };
+
   const exportToPDF = () => {
     const doc = new jsPDF("landscape");
+    const filteredRecords = getFilteredRecords();
 
-    // Judul
+    let reportTitle = "Laporan Kesehatan Karyawan";
+    if (showAllRecords) {
+      reportTitle = "Laporan Kesehatan Karyawan - Semua Data";
+    } else if (reportType === "daily") {
+      reportTitle = `Laporan Kesehatan Harian - ${new Date(reportDate).toLocaleDateString("id-ID")}`;
+    } else {
+      reportTitle = `Laporan Kesehatan Mingguan - ${reportWeek}`;
+    }
+
     doc.setFontSize(18);
-    doc.text("Laporan Kesehatan Karyawan", 14, 20);
+    doc.text(reportTitle, 14, 20);
 
-    // Tanggal cetak
     doc.setFontSize(10);
     doc.text(`Tanggal Cetak: ${new Date().toLocaleDateString("id-ID")}`, 14, 28);
 
-    // Tabel data - GUNAKAN records YANG SUDAH DIPASTIKAN ARRAY
-    const tableData = (records || []).map((r) => [r.nama, r.bn, r.umur, r.jabatan, r.supervisor, r.dept, r.systolic, r.diastolic, r.nadi, r.spo2 + "%", r.suhu + "°C", r.tanggal, getBloodPressureStatus(r.systolic, r.diastolic), r.fitness]);
+    const tableData = filteredRecords.map((r) => [
+      r.nama,
+      r.bn,
+      r.umur,
+      r.jabatan,
+      r.supervisor,
+      r.dept,
+      r.systolic,
+      r.diastolic,
+      r.nadi,
+      r.spo2 + "%",
+      r.suhu + "°C",
+      r.tanggal,
+      getBloodPressureStatus(r.systolic, r.diastolic),
+      r.fitness,
+      r.catatan || "-",
+    ]);
 
     autoTable(doc, {
-      head: [["Nama", "BN", "Umur", "Jabatan", "Supervisor", "Dept", "Sistolik", "Diastolik", "Nadi", "SpO2", "Suhu", "Tanggal", "Status TD", "Status Fit"]],
+      head: [["Nama", "BN", "Umur", "Jabatan", "Supervisor", "Dept", "Sistolik", "Diastolik", "Nadi", "SpO2", "Suhu", "Tanggal", "Status TD", "Status Fit", "Catatan"]],
       body: tableData,
       startY: 35,
       styles: { fontSize: 7 },
@@ -293,6 +406,9 @@ export default function App() {
           if (status === "FIT") {
             data.cell.styles.fillColor = [187, 247, 208];
             data.cell.styles.fontStyle = "bold";
+          } else if (status === "FIT WITH NOTE") {
+            data.cell.styles.fillColor = [253, 186, 116];
+            data.cell.styles.fontStyle = "bold";
           } else {
             data.cell.styles.fillColor = [252, 165, 165];
             data.cell.styles.fontStyle = "bold";
@@ -301,43 +417,42 @@ export default function App() {
       },
     });
 
-    // Tambahkan grafik
-    if ((records || []).length > 0 && chartRef.current) {
-      const chartImage = chartRef.current.toBase64Image();
-      doc.addPage();
-      doc.setFontSize(14);
-      doc.text("Grafik Tekanan Darah", 14, 20);
-      doc.addImage(chartImage, "PNG", 14, 30, 260, 100);
+    let fileName = `laporan-kesehatan-${new Date().toLocaleDateString("id-ID")}`;
+    if (showAllRecords) {
+      fileName = `laporan-semua-data-${new Date().toLocaleDateString("id-ID")}`;
+    } else if (reportType === "daily") {
+      fileName = `laporan-harian-${reportDate}`;
+    } else {
+      fileName = `laporan-mingguan-${reportWeek}`;
+    }
+    doc.save(`${fileName}.pdf`);
+  };
+
+  const getStatistics = () => {
+    const filteredRecords = getFilteredRecords();
+    const total = filteredRecords.length;
+
+    if (total === 0) {
+      return { total: 0, fit: 0, fitWithNote: 0, unfit: 0 };
     }
 
-    // Simpan PDF
-    doc.save(`laporan-kesehatan-${new Date().toLocaleDateString("id-ID")}.pdf`);
+    const fit = filteredRecords.filter((r) => r.fitness === "FIT").length;
+    const fitWithNote = filteredRecords.filter((r) => r.fitness === "FIT WITH NOTE").length;
+    const unfit = filteredRecords.filter((r) => r.fitness === "TIDAK FIT").length;
+
+    return {
+      total,
+      fit,
+      fitWithNote,
+      unfit,
+      fitPercentage: ((fit / total) * 100).toFixed(1),
+      fitWithNotePercentage: ((fitWithNote / total) * 100).toFixed(1),
+      unfitPercentage: ((unfit / total) * 100).toFixed(1),
+    };
   };
 
-  // Data grafik - GUNAKAN records YANG SUDAH DIPASTIKAN ARRAY
-  const chartData = {
-    labels: (records || []).map((r) => r.tanggal || r.time),
-    datasets: [
-      {
-        label: "Sistolik",
-        data: (records || []).map((r) => r.systolic),
-        borderWidth: 2,
-        borderColor: "rgb(59, 130, 246)",
-        backgroundColor: "rgba(59, 130, 246, 0.4)",
-        tension: 0.3,
-        pointRadius: 5,
-      },
-      {
-        label: "Diastolik",
-        data: (records || []).map((r) => r.diastolic),
-        borderWidth: 2,
-        borderColor: "rgb(239, 68, 68)",
-        backgroundColor: "rgba(239, 68, 68, 0.4)",
-        tension: 0.3,
-        pointRadius: 5,
-      },
-    ],
-  };
+  const stats = getStatistics();
+  const filteredRecords = getFilteredRecords();
 
   return (
     <div className="p-4 sm:p-6 max-w-7xl mx-auto space-y-4 sm:space-y-6">
@@ -346,7 +461,7 @@ export default function App() {
         <div className="flex gap-2 w-full sm:w-auto">
           <button
             onClick={handleDeleteAll}
-            disabled={(records || []).length === 0 || loading}
+            disabled={records.length === 0 || loading}
             className="bg-red-600 text-white px-3 sm:px-4 py-2 rounded hover:bg-red-700 disabled:bg-gray-400 disabled:cursor-not-allowed flex items-center gap-2 text-sm sm:text-base flex-1 sm:flex-initial justify-center"
           >
             <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
@@ -360,7 +475,7 @@ export default function App() {
           </button>
           <button
             onClick={exportToPDF}
-            disabled={(records || []).length === 0 || loading}
+            disabled={filteredRecords.length === 0 || loading}
             className="bg-green-600 text-white px-3 sm:px-4 py-2 rounded hover:bg-green-700 disabled:bg-gray-400 disabled:cursor-not-allowed flex items-center gap-2 text-sm sm:text-base flex-1 sm:flex-initial justify-center"
           >
             <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
@@ -377,6 +492,77 @@ export default function App() {
 
       {/* Loading Indicator */}
       {loading && <div className="bg-blue-100 border border-blue-400 text-blue-700 px-4 py-3 rounded">Memproses data...</div>}
+
+      {/* FILTER LAPORAN */}
+      <div className="bg-white p-4 rounded-lg border border-gray-300">
+        <h2 className="text-lg font-semibold mb-3">Filter Laporan</h2>
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+          <div>
+            <label className="block font-medium text-sm sm:text-base mb-1">Tipe Laporan</label>
+            <select className="border p-2 w-full rounded text-sm sm:text-base" value={reportType} onChange={(e) => setReportType(e.target.value)}>
+              <option value="daily">Harian</option>
+              <option value="weekly">Mingguan</option>
+            </select>
+          </div>
+
+          {reportType === "daily" ? (
+            <div>
+              <label className="block font-medium text-sm sm:text-base mb-1">Tanggal Laporan</label>
+              <input type="date" className="border p-2 w-full rounded text-sm sm:text-base" value={reportDate} onChange={(e) => setReportDate(e.target.value)} />
+            </div>
+          ) : (
+            <div>
+              <label className="block font-medium text-sm sm:text-base mb-1">Minggu Laporan</label>
+              <input type="week" className="border p-2 w-full rounded text-sm sm:text-base" value={reportWeek} onChange={(e) => setReportWeek(e.target.value)} />
+            </div>
+          )}
+
+          <div className="flex items-end">
+            <button onClick={() => setShowAllRecords(!showAllRecords)} className={`${showAllRecords ? "bg-purple-600 hover:bg-purple-700" : "bg-gray-600 hover:bg-gray-700"} text-white px-4 py-2 rounded text-sm sm:text-base w-full`}>
+              {showAllRecords ? "Tampilkan Filter" : "Tampilkan Semua"}
+            </button>
+          </div>
+
+          <div className="flex items-end">
+            <div className="text-sm text-gray-600">
+              <p>
+                Total Data: <span className="font-bold">{stats.total}</span>
+              </p>
+              <p>
+                Data Ditampilkan: <span className="font-bold">{filteredRecords.length}</span>
+              </p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* STATISTIK */}
+      {filteredRecords.length > 0 && (
+        <div className="bg-white p-4 rounded-lg border border-gray-300">
+          <h2 className="text-lg font-semibold mb-3">Statistik Kesehatan</h2>
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+            <div className="bg-green-100 p-4 rounded-lg text-center">
+              <div className="text-2xl font-bold text-green-700">{stats.fit}</div>
+              <div className="text-sm text-green-600">FIT</div>
+              <div className="text-xs text-green-500">{stats.fitPercentage}%</div>
+            </div>
+            <div className="bg-orange-100 p-4 rounded-lg text-center">
+              <div className="text-2xl font-bold text-orange-700">{stats.fitWithNote}</div>
+              <div className="text-sm text-orange-600">FIT WITH NOTE</div>
+              <div className="text-xs text-orange-500">{stats.fitWithNotePercentage}%</div>
+            </div>
+            <div className="bg-red-100 p-4 rounded-lg text-center">
+              <div className="text-2xl font-bold text-red-700">{stats.unfit}</div>
+              <div className="text-sm text-red-600">TIDAK FIT</div>
+              <div className="text-xs text-red-500">{stats.unfitPercentage}%</div>
+            </div>
+            <div className="bg-blue-100 p-4 rounded-lg text-center">
+              <div className="text-2xl font-bold text-blue-700">{stats.total}</div>
+              <div className="text-sm text-blue-600">TOTAL KARYAWAN</div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* FORM */}
       <div className="bg-gray-100 p-3 sm:p-4 rounded-lg">
@@ -451,6 +637,22 @@ export default function App() {
             <input type="date" className="border p-2 w-full rounded text-sm sm:text-base" value={tanggal} onChange={(e) => setTanggal(e.target.value)} />
           </div>
 
+          {/* Preview Status Fitness */}
+          {previewFitness && (
+            <div className="col-span-1 sm:col-span-2 lg:col-span-3">
+              <div className={`p-3 rounded-lg text-center font-bold ${getFitnessColor(previewFitness)}`}>
+                Status Preview: {previewFitness}
+                {previewFitness === "FIT WITH NOTE" && <div className="text-sm font-normal mt-1 text-orange-600">Catatan wajib diisi untuk status ini</div>}
+              </div>
+            </div>
+          )}
+
+          {/* Kolom Catatan */}
+          <div className="col-span-1 sm:col-span-2 lg:col-span-3">
+            <label className="block font-medium text-sm sm:text-base mb-1">Catatan (Wajib diisi jika status FIT WITH NOTE)</label>
+            <textarea className="border p-2 w-full rounded text-sm sm:text-base" value={catatan} onChange={(e) => setCatatan(e.target.value)} placeholder="Masukkan catatan khusus untuk status FIT WITH NOTE" rows="3" />
+          </div>
+
           <button
             onClick={handleSubmit}
             disabled={loading}
@@ -463,7 +665,23 @@ export default function App() {
         </div>
       </div>
 
-      {/* TABEL - GUNAKAN records YANG SUDAH DIPASTIKAN ARRAY */}
+      {/* INFO LAPORAN */}
+      <div className="bg-blue-50 p-3 rounded-lg border border-blue-200">
+        <div className="flex items-center gap-2">
+          <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-blue-600" viewBox="0 0 20 20" fill="currentColor">
+            <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clipRule="evenodd" />
+          </svg>
+          <span className="font-medium text-blue-800">
+            {showAllRecords
+              ? `Menampilkan Semua Data (${filteredRecords.length} data)`
+              : `Menampilkan ${reportType === "daily" ? "Laporan Harian" : "Laporan Mingguan"} -${reportType === "daily" ? ` Tanggal ${new Date(reportDate).toLocaleDateString("id-ID")}` : ` Minggu ${reportWeek}`} (${
+                  filteredRecords.length
+                } data)`}
+          </span>
+        </div>
+      </div>
+
+      {/* TABEL */}
       <div className="overflow-x-auto -mx-4 sm:mx-0">
         <div className="inline-block min-w-full align-middle">
           <div className="overflow-hidden border border-gray-300 sm:rounded-lg">
@@ -483,12 +701,13 @@ export default function App() {
                   <th className="border p-2 text-xs sm:text-sm hidden lg:table-cell">Suhu</th>
                   <th className="border p-2 text-xs sm:text-sm hidden xl:table-cell">Tanggal</th>
                   <th className="border p-2 text-xs sm:text-sm">Status Fit</th>
+                  <th className="border p-2 text-xs sm:text-sm hidden lg:table-cell">Catatan</th>
                   <th className="border p-2 text-xs sm:text-sm">Aksi</th>
                 </tr>
               </thead>
 
               <tbody>
-                {(records || []).map((r, i) => (
+                {filteredRecords.map((r, i) => (
                   <tr key={i} className={r.color}>
                     <td className="border p-2 text-xs sm:text-sm">{r.nama}</td>
                     <td className="border p-2 text-xs sm:text-sm">{r.bn}</td>
@@ -503,6 +722,7 @@ export default function App() {
                     <td className="border p-2 text-xs sm:text-sm hidden lg:table-cell">{r.suhu}°C</td>
                     <td className="border p-2 text-xs sm:text-sm hidden xl:table-cell">{r.tanggal}</td>
                     <td className={`border p-2 text-xs sm:text-sm text-center ${getFitnessColor(r.fitness)}`}>{r.fitness}</td>
+                    <td className="border p-2 text-xs sm:text-sm hidden lg:table-cell">{r.catatan || "-"}</td>
                     <td className="border p-2 text-center">
                       <div className="flex gap-1 justify-center">
                         <button onClick={() => handleEdit(i)} className="bg-blue-500 hover:bg-blue-600 text-white px-2 py-1 rounded text-xs sm:text-sm inline-flex items-center gap-1" title="Edit data">
@@ -531,13 +751,14 @@ export default function App() {
         </div>
       </div>
 
-      {/* GRAFIK */}
-      <div className="bg-white p-3 sm:p-4 rounded shadow">
-        <h2 className="text-lg sm:text-xl font-semibold mb-3 sm:mb-4">Grafik Tekanan Darah</h2>
-        <div className="w-full h-64 sm:h-80 md:h-96">
-          <Line ref={chartRef} data={chartData} options={{ maintainAspectRatio: false, responsive: true }} />
+      {filteredRecords.length === 0 && !loading && (
+        <div className="text-center py-8 text-gray-500">
+          <svg xmlns="http://www.w3.org/2000/svg" className="h-12 w-12 mx-auto text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+          </svg>
+          <p className="mt-2">Tidak ada data {showAllRecords ? "" : reportType === "daily" ? "untuk tanggal ini" : "untuk minggu ini"}</p>
         </div>
-      </div>
+      )}
     </div>
   );
 }
