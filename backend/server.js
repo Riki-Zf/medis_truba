@@ -333,7 +333,7 @@ app.get("/", async (req, res) => {
     const dbStatus = mongoose.connection.readyState;
 
     res.json({
-      message: "Health Record API is running!!",
+      message: "Health Record API is running!!!",
       database: getDBStatusText(dbStatus),
       databaseStatus: dbStatus,
       environment: process.env.NODE_ENV || "development",

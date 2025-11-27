@@ -1,7 +1,7 @@
 {
   "name": "backend",
   "version": "1.0.0",
-  "description": "Backend for Health Record Management System",
+  "description": "Backend for Health Record Management System!",
   "main": "server.js",
   "type": "module",
   "scripts": {
