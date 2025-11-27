@@ -8,49 +8,49 @@ const app = express();
 app.use(express.json());
 app.use(cors());
 
-// MongoDB connection - PERBAIKAN: Hapus options yang deprecated
-const MONGODB_URI = "mongodb+srv://riki:riki@cluster0.ouqklmc.mongodb.net/health-record?retryWrites=true&w=majority";
+// MongoDB connection
+const MONGODB_URI = process.env.MONGODB_URI || "mongodb+srv://riki:riki@cluster0.ouqklmc.mongodb.net/health-record?retryWrites=true&w=majority";
 
-// Connection function yang lebih robust
-const connectDB = async () => {
-  try {
-    console.log("🔄 Attempting to connect to MongoDB...");
+// PERBAIKAN: Cached connection untuk serverless (Vercel)
+let cached = global.mongoose;
 
-    // PERBAIKAN: Hapus useNewUrlParser dan useUnifiedTopology (sudah tidak diperlukan di Mongoose 6+)
-    const options = {
-      serverSelectionTimeoutMS: 30000,
+if (!cached) {
+  cached = global.mongoose = { conn: null, promise: null };
+}
+
+// Connection function yang optimized untuk serverless
+async function connectDB() {
+  if (cached.conn) {
+    console.log("✅ Using cached MongoDB connection");
+    return cached.conn;
+  }
+
+  if (!cached.promise) {
+    const opts = {
+      serverSelectionTimeoutMS: 5000,
       socketTimeoutMS: 45000,
       maxPoolSize: 10,
+      minPoolSize: 2,
+      maxIdleTimeMS: 10000,
     };
 
-    const conn = await mongoose.connect(MONGODB_URI, options);
-    console.log("✅ MongoDB Connected Successfully");
-    console.log(`📊 Host: ${conn.connection.host}`);
-    console.log(`🗂️ Database: ${conn.connection.name}`);
-    return true;
-  } catch (error) {
-    console.error("❌ MongoDB connection failed:");
-    console.error("Error name:", error.name);
-    console.error("Error message:", error.message);
-
-    // PERBAIKAN: Tambahkan error details yang lebih spesifik
-    if (error.message.includes("authentication")) {
-      console.error("🔐 Authentication failed - Check username/password");
-    } else if (error.message.includes("ENOTFOUND")) {
-      console.error("🌐 Cannot find MongoDB server - Check connection string");
-    } else if (error.message.includes("network")) {
-      console.error("📡 Network error - Check internet connection and firewall");
-    }
-
-    // Retry connection setelah 5 detik
-    console.log("🔄 Retrying connection in 5 seconds...");
-    setTimeout(connectDB, 5000);
-    return false;
+    console.log("🔄 Creating new MongoDB connection...");
+    cached.promise = mongoose.connect(MONGODB_URI, opts).then((mongoose) => {
+      console.log("✅ MongoDB Connected Successfully");
+      return mongoose;
+    });
   }
-};
 
-// Initialize connection
-connectDB();
+  try {
+    cached.conn = await cached.promise;
+  } catch (e) {
+    cached.promise = null;
+    console.error("❌ MongoDB connection failed:", e.message);
+    throw e;
+  }
+
+  return cached.conn;
+}
 
 // Event listeners untuk monitoring connection
 mongoose.connection.on("connected", () => {
@@ -63,18 +63,6 @@ mongoose.connection.on("error", (err) => {
 
 mongoose.connection.on("disconnected", () => {
   console.log("🔌 Mongoose disconnected from MongoDB");
-});
-
-mongoose.connection.on("reconnected", () => {
-  console.log("🔁 Mongoose reconnected to MongoDB");
-});
-
-// Graceful shutdown
-process.on("SIGINT", async () => {
-  console.log("🛑 Shutting down gracefully...");
-  await mongoose.connection.close();
-  console.log("✅ MongoDB connection closed.");
-  process.exit(0);
 });
 
 // ---- Schema ----
@@ -146,7 +134,7 @@ const RecordSchema = new mongoose.Schema(
   }
 );
 
-const Record = mongoose.model("Record", RecordSchema);
+const Record = mongoose.models.Record || mongoose.model("Record", RecordSchema);
 
 // ---- API Routes ----
 
@@ -166,21 +154,24 @@ const getDBStatusText = (status) => {
   }
 };
 
-// Middleware untuk check database connection
-const checkDB = (req, res, next) => {
-  if (mongoose.connection.readyState !== 1) {
+// Middleware untuk connect database di setiap request (serverless)
+const ensureDB = async (req, res, next) => {
+  try {
+    await connectDB();
+    next();
+  } catch (error) {
     return res.status(503).json({
-      error: "Database not connected",
-      message: "Please try again in a few seconds",
+      success: false,
+      error: "Database connection failed",
+      message: error.message,
       databaseStatus: mongoose.connection.readyState,
       databaseStatusText: getDBStatusText(mongoose.connection.readyState),
     });
   }
-  next();
 };
 
 // GET semua data
-app.get("/api/records", checkDB, async (req, res) => {
+app.get("/api/records", ensureDB, async (req, res) => {
   try {
     const records = await Record.find().sort({ _id: -1 });
     res.json({
@@ -199,7 +190,7 @@ app.get("/api/records", checkDB, async (req, res) => {
 });
 
 // POST tambah data
-app.post("/api/records", checkDB, async (req, res) => {
+app.post("/api/records", ensureDB, async (req, res) => {
   try {
     // Validasi data required
     const requiredFields = ["nama", "bn", "umur", "jabatan", "supervisor", "dept", "systolic", "diastolic", "nadi", "spo2", "suhu", "tanggal", "time", "color", "fitness"];
@@ -230,7 +221,7 @@ app.post("/api/records", checkDB, async (req, res) => {
 });
 
 // PUT update data
-app.put("/api/records/:id", checkDB, async (req, res) => {
+app.put("/api/records/:id", ensureDB, async (req, res) => {
   try {
     const record = await Record.findByIdAndUpdate(req.params.id, req.body, {
       new: true,
@@ -260,7 +251,7 @@ app.put("/api/records/:id", checkDB, async (req, res) => {
 });
 
 // DELETE satu data
-app.delete("/api/records/:id", checkDB, async (req, res) => {
+app.delete("/api/records/:id", ensureDB, async (req, res) => {
   try {
     const record = await Record.findByIdAndDelete(req.params.id);
 
@@ -286,7 +277,7 @@ app.delete("/api/records/:id", checkDB, async (req, res) => {
 });
 
 // DELETE semua data
-app.delete("/api/records", checkDB, async (req, res) => {
+app.delete("/api/records", ensureDB, async (req, res) => {
   try {
     const result = await Record.deleteMany({});
     res.json({
@@ -303,49 +294,71 @@ app.delete("/api/records", checkDB, async (req, res) => {
   }
 });
 
-// Health check endpoint yang lebih detail
-app.get("/api/health", (req, res) => {
-  const dbStatus = mongoose.connection.readyState;
-  const statusText = getDBStatusText(dbStatus);
+// Health check endpoint
+app.get("/api/health", async (req, res) => {
+  try {
+    await connectDB();
+    const dbStatus = mongoose.connection.readyState;
+    const statusText = getDBStatusText(dbStatus);
 
-  res.json({
-    status: dbStatus === 1 ? "Healthy" : "Unhealthy",
-    message: "Server is running",
-    database: {
-      status: statusText,
-      code: dbStatus,
-      connectionString: MONGODB_URI ? "Configured" : "Not configured",
-    },
-    environment: process.env.NODE_ENV || "development",
-    timestamp: new Date().toISOString(),
-    uptime: process.uptime(),
-  });
+    res.json({
+      status: dbStatus === 1 ? "Healthy" : "Unhealthy",
+      message: "Server is running",
+      database: {
+        status: statusText,
+        code: dbStatus,
+        connectionString: MONGODB_URI ? "Configured" : "Not configured",
+      },
+      environment: process.env.NODE_ENV || "development",
+      timestamp: new Date().toISOString(),
+    });
+  } catch (error) {
+    res.status(503).json({
+      status: "Unhealthy",
+      message: "Server is running but database connection failed",
+      error: error.message,
+      database: {
+        status: "Error",
+        code: mongoose.connection.readyState,
+      },
+      timestamp: new Date().toISOString(),
+    });
+  }
 });
 
 // Handle root path
-app.get("/", (req, res) => {
-  const dbStatus = mongoose.connection.readyState;
+app.get("/", async (req, res) => {
+  try {
+    await connectDB();
+    const dbStatus = mongoose.connection.readyState;
 
-  res.json({
-    message: "Health Record API is running!!",
-    database: getDBStatusText(dbStatus),
-    databaseStatus: dbStatus,
-    environment: process.env.NODE_ENV || "development",
-    timestamp: new Date().toISOString(),
-    endpoints: {
-      health: "/api/health",
-      records: {
-        getAll: "GET /api/records",
-        create: "POST /api/records",
-        update: "PUT /api/records/:id",
-        delete: "DELETE /api/records/:id",
-        deleteAll: "DELETE /api/records",
+    res.json({
+      message: "Health Record API is running!!",
+      database: getDBStatusText(dbStatus),
+      databaseStatus: dbStatus,
+      environment: process.env.NODE_ENV || "development",
+      timestamp: new Date().toISOString(),
+      endpoints: {
+        health: "/api/health",
+        records: {
+          getAll: "GET /api/records",
+          create: "POST /api/records",
+          update: "PUT /api/records/:id",
+          delete: "DELETE /api/records/:id",
+          deleteAll: "DELETE /api/records",
+        },
       },
-    },
-  });
+    });
+  } catch (error) {
+    res.json({
+      message: "Health Record API is running (database connection pending)",
+      error: error.message,
+      timestamp: new Date().toISOString(),
+    });
+  }
 });
 
-// Handle 404 routes - PERBAIKAN: Ganti "*" dengan callback langsung
+// Handle 404 routes
 app.use((req, res) => {
   res.status(404).json({
     success: false,
@@ -374,34 +387,22 @@ app.use((error, req, res, next) => {
   });
 });
 
-// Start server
+// Start server (untuk local development)
 const PORT = process.env.PORT || 3000;
 
-const startServer = () => {
-  app.listen(PORT, () => {
+if (process.env.NODE_ENV !== "production") {
+  app.listen(PORT, async () => {
     console.log(`\n🚀 Server running on port ${PORT}`);
-    console.log(`📊 Database status: ${getDBStatusText(mongoose.connection.readyState)}`);
+    try {
+      await connectDB();
+      console.log(`📊 Database status: ${getDBStatusText(mongoose.connection.readyState)}`);
+    } catch (error) {
+      console.log(`❌ Database connection failed: ${error.message}`);
+    }
     console.log(`🌍 Environment: ${process.env.NODE_ENV || "development"}`);
     console.log(`🏥 Health check: http://localhost:${PORT}/api/health`);
     console.log(`📍 API Root: http://localhost:${PORT}/`);
   });
-};
-
-// Tunggu connection database sebelum start server
-if (mongoose.connection.readyState === 1) {
-  startServer();
-} else {
-  mongoose.connection.once("connected", () => {
-    startServer();
-  });
-
-  // Fallback: start server setelah 2 detik meski database belum connect
-  setTimeout(() => {
-    if (mongoose.connection.readyState !== 1) {
-      console.log("⚠️ Starting server without database connection...");
-      startServer();
-    }
-  }, 2000);
 }
 
 export default app;
