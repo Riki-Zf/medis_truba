@@ -553,7 +553,7 @@ export default function App() {
             </div>
             <div className="bg-red-100 p-4 rounded-lg text-center">
               <div className="text-2xl font-bold text-red-700">{stats.unfit}</div>
-              <div className="text-sm text-red-600">TIDAK FIT</div>
+              <div className="text-sm text-red-600">UNFIT</div>
               <div className="text-xs text-red-500">{stats.unfitPercentage}%</div>
             </div>
             <div className="bg-blue-100 p-4 rounded-lg text-center">
